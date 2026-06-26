@@ -3,14 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Cart;
 use App\Models\Order;
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 
 class OrderController extends Controller
 {
     public function store(Request $request)
     {
-        $request->validate([
+        $validated = $request->validate([
             'full_name' => 'required|string|max:255',
             'email' => 'required|email|max:255',
             'address' => 'required|string',
@@ -20,39 +23,49 @@ class OrderController extends Controller
             'country' => 'required|string|max:255',
             'phone' => 'required|string|max:50',
             'payment_method' => 'nullable|string|max:50',
+            'notes' => 'nullable|string',
             // totals can be computed server-side, but we accept them for now
             'subtotal' => 'nullable|numeric|min:0',
             'shipping_cost' => 'nullable|numeric|min:0',
             'tax' => 'nullable|numeric|min:0',
             'total_amount' => 'nullable|numeric|min:0',
             'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|integer',
+            'items.*.product_id' => 'required|integer|exists:products,id',
             'items.*.quantity' => 'required|integer|min:1',
         ]);
 
-        $order = Order::create([
-            'user_id' => $request->user()->id,
-            'full_name' => $request->full_name,
-            'email' => $request->email,
-            'address' => $request->address,
-            'city' => $request->city,
-            'state' => $request->state,
-            'postal_code' => $request->postal_code,
-            'country' => $request->country,
-            'phone' => $request->phone,
-            'payment_method' => $request->payment_method,
-            'status' => 'pending',
-            'subtotal' => $request->subtotal ?? 0,
-            'shipping_cost' => $request->shipping_cost ?? 0,
-            'tax' => $request->tax ?? 0,
-            'total_amount' => $request->total_amount ?? 0,
-            'notes' => $request->notes,
-        ]);
+        $order = DB::transaction(function () use ($request, $validated) {
+            $products = Product::whereIn('id', collect($validated['items'])->pluck('product_id'))
+                ->get()
+                ->keyBy('id');
 
-        // Create order items
-        if (method_exists($order, 'items')) {
-            foreach ($request->items as $item) {
-                $product = \App\Models\Product::findOrFail($item['product_id']);
+            $subtotal = collect($validated['items'])->sum(function ($item) use ($products) {
+                return $products[$item['product_id']]->price * $item['quantity'];
+            });
+            $shippingCost = $validated['shipping_cost'] ?? 0;
+            $tax = $validated['tax'] ?? 0;
+
+            $order = Order::create([
+                'user_id' => $request->user()->id,
+                'full_name' => $validated['full_name'],
+                'email' => $validated['email'],
+                'address' => $validated['address'],
+                'city' => $validated['city'],
+                'state' => $validated['state'] ?? '',
+                'postal_code' => $validated['postal_code'] ?? '',
+                'country' => $validated['country'],
+                'phone' => $validated['phone'],
+                'payment_method' => $validated['payment_method'] ?? null,
+                'status' => 'pending',
+                'subtotal' => $subtotal,
+                'shipping_cost' => $shippingCost,
+                'tax' => $tax,
+                'total_amount' => $subtotal + $shippingCost + $tax,
+                'notes' => $validated['notes'] ?? null,
+            ]);
+
+            foreach ($validated['items'] as $item) {
+                $product = $products[$item['product_id']];
                 $order->items()->create([
                     'product_id' => $item['product_id'],
                     'quantity' => $item['quantity'],
@@ -60,7 +73,11 @@ class OrderController extends Controller
                     'price' => $product->price,
                 ]);
             }
-        }
+
+            Cart::where('user_id', $request->user()->id)->delete();
+
+            return $order;
+        });
 
         return response()->json(['message' => 'Order created', 'order_id' => $order->id], 201);
     }
@@ -92,9 +109,9 @@ class OrderController extends Controller
                 'items' => $order->items->map(function ($item) {
                     return [
                         'id' => $item->id,
-                        'product_name' => $item->product?->name,
+                        'product_name' => $item->product_name ?? $item->product?->name,
                         'product_image' => $item->product?->image,
-                        'price' => $item->product?->price,
+                        'price' => $item->price ?? $item->product?->price,
                         'quantity' => $item->quantity,
                     ];
                 })->values(),
@@ -126,9 +143,9 @@ class OrderController extends Controller
             'items' => $order->items->map(function ($item) {
                 return [
                     'id' => $item->id,
-                    'product_name' => $item->product?->name,
+                    'product_name' => $item->product_name ?? $item->product?->name,
                     'product_image' => $item->product?->image,
-                    'price' => $item->product?->price,
+                    'price' => $item->price ?? $item->product?->price,
                     'quantity' => $item->quantity,
                 ];
             })->values(),
