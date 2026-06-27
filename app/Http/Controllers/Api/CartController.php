@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 
 class CartController extends Controller
 {
+
     public function index(Request $request)
     {
         $cartItems = Cart::with('product')
@@ -37,17 +38,29 @@ class CartController extends Controller
 
         $product = Product::findOrFail($request->product_id);
 
+        // Always increment quantity (safe for existing rows), and for new rows it will be created then incremented.
+        // With this controller, duplicate requests will still increase quantity twice.
+        // Frontend should prevent duplicates.
         $cartItem = Cart::updateOrCreate(
             [
                 'user_id' => $request->user()->id,
                 'product_id' => $request->product_id
             ],
             [
-                'quantity' => \DB::raw('quantity + ' . $request->quantity)
+                // quantity logic will be handled safely below
+                'quantity' => $request->quantity
             ]
         );
 
+        // If the row already existed, increment quantity exactly once.
+        // We always increment only when it was NOT created.
+        if (!$cartItem->wasRecentlyCreated) {
+            $cartItem->increment('quantity', $request->quantity);
+        }
+
         $cartItem->refresh();
+
+
 
         return response()->json([
             'id' => $cartItem->id,

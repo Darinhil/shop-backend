@@ -17,6 +17,12 @@ class Product extends Model
         'featured'
     ];
 
+    protected $casts = [
+        'price' => 'float',
+        'discount' => 'float',
+        'featured' => 'boolean',
+    ];
+
     public function category()
     {
         return $this->belongsTo(Category::class);
